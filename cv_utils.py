@@ -23,14 +23,15 @@ def get_cow_mask(cow_img):
     return closed_mask
 
 
-def get_bounding_boxes(binary_mask):
+def get_bounding_boxes(binary_mask, min_area=15):
     contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     bounding_boxes = [cv2.boundingRect(contour) for contour in contours]
     
     box_coords = []
     for bb in bounding_boxes:
-        center = (bb[0] + bb[2]/2., bb[1] + bb[3]/2.)
-        box_coords.append((center, bb))
+        if bb[2] * bb[3] >= min_area:
+            center = (bb[0] + bb[2]/2., bb[1] + bb[3]/2.)
+            box_coords.append((center, bb))
         
     return box_coords
 
@@ -51,12 +52,13 @@ def dist(p1, p2):
 
 
 class ObjectTracker(object):
-    def __init__(self, movement_threshold, size_threshold, time_threshold=5, n_hist=10):
+    def __init__(self, movement_threshold, size_threshold, time_threshold=5, n_hist=10, stationary_threshold=40):
         # Thresholds before a bounding box can no longer be
         # considered a continuation
         self.mt = movement_threshold
         self.st = size_threshold
         self.tt = time_threshold
+        self.statt = stationary_threshold
         self.n_hist = n_hist # Number of previous frame data to keep
         self.curr_id = 0 # Next object ID to be generated
         self.curr_visible_id = 0 # Next object ID to be given to a confirmed object
@@ -66,7 +68,7 @@ class ObjectTracker(object):
         
     def create_object(self):
         self.object_map[self.curr_id] = [-1, []]
-        for _ in range(self.n_hist):
+        for _ in range(self.statt):
             self.object_map[self.curr_id][1].append(None)
         self.curr_id += 1
         
@@ -86,11 +88,13 @@ class ObjectTracker(object):
         # Check all current object for updates that need to be made
         del_object_ids = []
         for object_id, (visible_id, object_hist) in self.object_map.items():
-            if object_hist == [None] * len(object_hist):
+            if object_hist[-self.n_hist:] == [None] * self.n_hist:
                 del_object_ids.append(object_id)
             elif visible_id == -1 and not (None in object_hist[-self.tt:]):
                 self.object_map[object_id][0] = self.curr_visible_id
                 self.curr_visible_id += 1
+            elif visible_id > -1 and len(set(object_hist)) == 1:
+                self.object_map[object_id][0] = -2
         
         for object_id in del_object_ids:
             del self.object_map[object_id]
