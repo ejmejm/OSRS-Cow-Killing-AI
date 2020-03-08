@@ -2,10 +2,75 @@ import numpy as np
 import time
 import cv2
 import copy
+from PIL import Image
+
+import torch
+from torch import nn
+from torchvision import transforms
 
 
 hsv_white_range = [(0, 0, 99), (29, 52, 255)]
 hsv_brown_range = [(0, 93, 23), (175, 119,  133)]
+
+INPUT_SIZE = 48
+
+img_transform = transforms.Compose([
+                    transforms.Resize(INPUT_SIZE),
+                    transforms.CenterCrop(INPUT_SIZE),
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])])
+
+class CNN(nn.Module):
+    def __init__(self):
+        super(CNN, self).__init__()
+        
+        # 3 x 48 x 48 input
+        self.layer1 = nn.Sequential(
+            nn.Conv2d(3, 8, kernel_size=5, stride=2, padding=0),
+            nn.ReLU())
+        self.layer2 = nn.Sequential(
+            nn.Conv2d(8, 8, kernel_size=3, stride=1, padding=0),
+            nn.MaxPool2d(2),
+            nn.ReLU())
+        self.layer3 = nn.Sequential(
+            nn.Conv2d(8, 16, kernel_size=3, stride=1, padding=0),
+            nn.MaxPool2d(2),
+            nn.ReLU())
+        self.layer4 = nn.Sequential(
+            nn.Linear(16 * 4 * 4, 128),
+            nn.ReLU())
+        self.layer5 = nn.Sequential(
+            nn.Linear(128, 2))
+        
+    def forward(self, x):
+        out = self.layer1(x)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = out.view(-1, 16 * 4 * 4)
+        out = self.layer4(out)
+        out = self.layer5(out)
+        
+        return out
+
+    
+def load_model(model_path='models/cow_classifier.pt'):
+    return torch.load(model_path).cuda()
+
+
+def classify_imgs(model, pixels_arr):
+    """
+    Given the model and an array of images in numpy format, returns a list
+    of predicted labels, 1 for cow, 0 for not a cow.
+    """
+    img_arr = [Image.fromarray(np.uint8(pixels)) for pixels in pixels_arr]
+    img_arr = [img_transform(img) for img in img_arr]
+    img_arr = torch.stack(img_arr)
+    img_arr = img_arr.cuda()
+    
+    outputs = model(img_arr).cpu().detach().numpy()
+    pred_labels = 1 - np.argmax(outputs, axis=1)
+    
+    return pred_labels
 
 
 def get_cow_mask(cow_img):
@@ -23,9 +88,14 @@ def get_cow_mask(cow_img):
     return closed_mask
 
 
-def get_bounding_boxes(binary_mask, min_area=15):
+def get_bounding_boxes(binary_mask, min_area=15, pixels=None, model=None):
     contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     bounding_boxes = [cv2.boundingRect(contour) for contour in contours]
+    
+    if model is not None and pixels is not None:
+        cropped_imgs = [pixels[y:y+height, x:x+width] for x, y, width, height in bounding_boxes]
+        pred_labels = classify_imgs(model, cropped_imgs)
+        bounding_boxes = [box for box, label in zip(bounding_boxes, pred_labels) if label]
     
     box_coords = []
     for bb in bounding_boxes:
